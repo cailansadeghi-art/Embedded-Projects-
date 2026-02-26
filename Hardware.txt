@@ -1,0 +1,30 @@
+Project Hardware Requirements & Recommendations
+-----------------------------------------------
+
+• STM32 Nucleo Board (Recommended: STM32F401RE)
+• Solderless Breadboard (Full-size preferred)
+• Jumper Wires (Male-Male and Male-Female)
+
+Sensors:
+• Temperature Sensor (Recommended: LM35 or TMP36 for simple analog ADC use)
+
+Motor System:
+• L298N Dual H-Bridge Motor Driver
+• 5V DC Motor (Small hobby motor)
+
+Basic I/O:
+• LEDs (5mm assorted colors)
+• Push Buttons (Tactile switches)
+• Resistors:
+    - 220Ω (LED current limiting)
+    - 1kΩ (general purpose)
+    - 10kΩ (pull-up / pull-down resistors)
+
+Power:
+• 9V Battery with clip (For motor driver only)
+• USB cable (For STM32 programming and logic power)
+
+Important Notes:
+• Do NOT power STM32 directly from 9V.
+• Ensure all grounds (STM32, L298N, sensors) are connected together.
+• Use USB power for STM32 logic and external supply for motor.
