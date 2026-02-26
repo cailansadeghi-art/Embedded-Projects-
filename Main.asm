@@ -502,4 +502,5 @@ Motor_ASM_Get_Auto_Mode PROC
         ENDP
 
         ALIGN
+
         END
