@@ -1,0 +1,505 @@
+; Motor Controller Assembly - STM32F401RE with L298N
+; 3 Speed buttons: 60%, 85%, 100% (PC0, PC1, PC2)
+; 3 LED indicators (PA5, PA6, PA7)
+; PWM motor control on PB3 (TIM2_CH2)
+; Motor direction: PA0 (IN1), PA1 (IN2)
+
+        PRESERVE8
+        THUMB
+
+; GPIO Base Addresses
+GPIOA_BASE      EQU     0x40020000
+GPIOA_MODER     EQU     GPIOA_BASE + 0x00
+GPIOA_ODR       EQU     GPIOA_BASE + 0x14
+GPIOA_BSRR      EQU     GPIOA_BASE + 0x18
+
+GPIOB_BASE      EQU     0x40020400
+GPIOB_MODER     EQU     GPIOB_BASE + 0x00
+GPIOB_AFRL      EQU     GPIOB_BASE + 0x20
+
+GPIOC_BASE      EQU     0x40020800
+GPIOC_MODER     EQU     GPIOC_BASE + 0x00
+GPIOC_PUPDR     EQU     GPIOC_BASE + 0x0C
+GPIOC_IDR       EQU     GPIOC_BASE + 0x10
+
+RCC_BASE        EQU     0x40023800
+RCC_AHB1ENR     EQU     RCC_BASE + 0x30
+RCC_APB1ENR     EQU     RCC_BASE + 0x40
+
+TIM2_BASE       EQU     0x40000000
+TIM2_CR1        EQU     TIM2_BASE + 0x00
+TIM2_PSC        EQU     TIM2_BASE + 0x28
+TIM2_ARR        EQU     TIM2_BASE + 0x2C
+TIM2_CCR2       EQU     TIM2_BASE + 0x38
+TIM2_CCMR1      EQU     TIM2_BASE + 0x18
+TIM2_CCER       EQU     TIM2_BASE + 0x20
+
+; Pin definitions
+BTN_60          EQU     0           ; PC0
+BTN_85          EQU     1           ; PC1
+BTN_100         EQU     2           ; PC2
+BTN_AUTO        EQU     3           ; PC3 - AUTO MODE BUTTON
+LED_60          EQU     5           ; PA5
+LED_85          EQU     6           ; PA6
+LED_100         EQU     7           ; PA7
+LED_AUTO        EQU     4           ; PA4 - AUTO MODE LED
+MOTOR_IN1       EQU     0           ; PA0
+MOTOR_IN2       EQU     1           ; PA1
+
+; PWM values (0-8399 for 10kHz PWM)
+PWM_OFF         EQU     0
+PWM_60          EQU     5040        ; 60% duty cycle
+PWM_85          EQU     7140        ; 85% duty cycle
+PWM_100         EQU     8399        ; 100% duty cycle
+
+; Variables
+        AREA    MOTOR_DATA, DATA, READWRITE
+current_speed   SPACE   4
+last_button     SPACE   4           ; For debouncing
+auto_mode       SPACE   4           ; 0 = manual, 1 = auto
+
+; Code
+        AREA    MOTOR_CODE, CODE, READONLY
+        
+        EXPORT  Motor_ASM_Init
+        EXPORT  Motor_ASM_Loop
+        EXPORT  Motor_ASM_Test_LEDs
+        EXPORT  Motor_ASM_Set_PWM_C
+        EXPORT  Motor_ASM_Get_Auto_Mode
+
+;------------------------------------------------
+; Initialize motor controller
+;------------------------------------------------
+Motor_ASM_Init PROC
+        PUSH    {R4, LR}
+        
+        ; Enable clocks for GPIOA, GPIOB, GPIOC
+        LDR     R4, =RCC_AHB1ENR
+        LDR     R0, [R4]
+        ORR     R0, R0, #0x07       ; Bits 0, 1, 2
+        STR     R0, [R4]
+        
+        ; Enable clock for TIM2
+        LDR     R4, =RCC_APB1ENR
+        LDR     R0, [R4]
+        ORR     R0, R0, #0x01       ; Bit 0
+        STR     R0, [R4]
+        
+        ; Configure GPIO pins
+        BL      Config_GPIO
+        
+        ; Configure Timer for PWM
+        BL      Config_Timer
+        
+        ; Initialize speed to OFF
+        LDR     R4, =current_speed
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        LDR     R4, =last_button
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        ; Initialize auto mode to OFF
+        LDR     R4, =auto_mode
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        ; Set motor direction FORWARD (IN1=1, IN2=0)
+        ; First clear both pins, then set IN1
+        LDR     R4, =GPIOA_ODR
+        LDR     R0, [R4]
+        BIC     R0, R0, #(1<<MOTOR_IN1)     ; Clear PA0
+        BIC     R0, R0, #(1<<MOTOR_IN2)     ; Clear PA1
+        ORR     R0, R0, #(1<<MOTOR_IN1)     ; Set PA0 = 1
+        STR     R0, [R4]
+        
+        ; Turn all LEDs off
+        BL      All_LEDs_Off
+        
+        ; Set PWM to 0
+        MOV     R0, #PWM_OFF
+        BL      Set_PWM
+        
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Configure GPIO pins
+;------------------------------------------------
+Config_GPIO PROC
+        PUSH    {R4, LR}
+        
+        ; Configure PA0, PA1 as outputs (motor direction)
+        LDR     R4, =GPIOA_MODER
+        LDR     R0, [R4]
+        BIC     R0, R0, #0x0F           ; Clear bits 0-3
+        ORR     R0, R0, #0x05           ; Set to output mode (01)
+        STR     R0, [R4]
+        
+        ; Configure PA5, PA6, PA7 as outputs (LEDs)
+        LDR     R0, [R4]
+        BIC     R0, R0, #(3<<8)         ; Clear PA4
+        BIC     R0, R0, #(3<<10)        ; Clear PA5
+        BIC     R0, R0, #(3<<12)        ; Clear PA6
+        BIC     R0, R0, #(3<<14)        ; Clear PA7
+        ORR     R0, R0, #(1<<8)         ; PA4 = output (AUTO LED)
+        ORR     R0, R0, #(1<<10)        ; PA5 = output
+        ORR     R0, R0, #(1<<12)        ; PA6 = output
+        ORR     R0, R0, #(1<<14)        ; PA7 = output
+        STR     R0, [R4]
+        
+        ; Configure PB3 as alternate function (TIM2_CH2 for PWM)
+        LDR     R4, =GPIOB_MODER
+        LDR     R0, [R4]
+        BIC     R0, R0, #(3<<6)         ; Clear bits 6-7
+        ORR     R0, R0, #(2<<6)         ; Set to AF mode (10)
+        STR     R0, [R4]
+        
+        ; Set AF1 for PB3 (TIM2_CH2)
+        LDR     R4, =GPIOB_AFRL
+        LDR     R0, [R4]
+        BIC     R0, R0, #(0xF<<12)      ; Clear AF for PB3
+        ORR     R0, R0, #(1<<12)        ; Set AF1
+        STR     R0, [R4]
+        
+        ; Configure PC0, PC1, PC2, PC3 as inputs (buttons)
+        LDR     R4, =GPIOC_MODER
+        LDR     R0, [R4]
+        BIC     R0, R0, #0xFF           ; Clear bits 0-7 (input mode)
+        STR     R0, [R4]
+        
+        ; Enable pull-ups on PC0, PC1, PC2, PC3
+        LDR     R4, =GPIOC_PUPDR
+        LDR     R0, [R4]
+        BIC     R0, R0, #0xFF           ; Clear bits 0-7
+        ORR     R0, R0, #0x55           ; Set pull-up (01 pattern)
+        STR     R0, [R4]
+        
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Configure Timer 2 for PWM
+; System clock at 84MHz, APB1 timer clock at 84MHz
+;------------------------------------------------
+Config_Timer PROC
+        PUSH    {R4, LR}
+        
+        ; Disable timer first
+        LDR     R4, =TIM2_CR1
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        ; Prescaler = 0 (84MHz / 1 = 84MHz)
+        LDR     R4, =TIM2_PSC
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        ; ARR = 8399 (84MHz / 8400 = 10kHz PWM frequency)
+        LDR     R4, =TIM2_ARR
+        LDR     R0, =8399
+        STR     R0, [R4]
+        
+        ; Configure Channel 2 for PWM mode 1
+        ; CC2S = 00 (output), OC2M = 110 (PWM mode 1), OC2PE = 1
+        LDR     R4, =TIM2_CCMR1
+        MOV     R0, #0x6800             ; bits 14-12: OC2M=110, bit 11: OC2PE=1
+        STR     R0, [R4]
+        
+        ; Enable Channel 2 output, active high
+        LDR     R4, =TIM2_CCER
+        MOV     R0, #(1<<4)             ; CC2E = 1
+        STR     R0, [R4]
+        
+        ; Initialize CCR2 to 0
+        LDR     R4, =TIM2_CCR2
+        MOV     R0, #0
+        STR     R0, [R4]
+        
+        ; Enable timer with auto-reload preload
+        LDR     R4, =TIM2_CR1
+        MOV     R0, #0x81               ; CEN=1, ARPE=1
+        STR     R0, [R4]
+        
+        ; Force update to load registers
+        LDR     R4, =TIM2_BASE
+        LDR     R0, [R4, #0x14]         ; EGR register
+        ORR     R0, R0, #0x01           ; UG bit
+        STR     R0, [R4, #0x14]
+        
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Main control loop
+;------------------------------------------------
+Motor_ASM_Loop PROC
+        PUSH    {R4-R6, LR}
+        
+        ; Read buttons
+        BL      Read_Buttons            ; Returns button in R0
+        
+        ; If no button pressed, maintain current state
+        CMP     R0, #0
+        BEQ     Loop_Done
+        
+        ; Check for AUTO button (button 4)
+        CMP     R0, #4
+        BEQ     Toggle_Auto
+        
+        ; If in auto mode, ignore manual buttons
+        LDR     R4, =auto_mode
+        LDR     R5, [R4]
+        CMP     R5, #1
+        BEQ     Loop_Done
+        
+        ; Manual mode - check which button
+        CMP     R0, #1
+        BEQ     Set_60
+        CMP     R0, #2
+        BEQ     Set_85
+        CMP     R0, #3
+        BEQ     Set_100
+        B       Loop_Done
+
+Toggle_Auto
+        ; Toggle auto mode
+        LDR     R4, =auto_mode
+        LDR     R0, [R4]
+        EOR     R0, R0, #1              ; Toggle bit
+        STR     R0, [R4]
+        
+        ; Update LED
+        CMP     R0, #1
+        BEQ     Auto_On
+        
+        ; Auto off - turn off auto LED and all other LEDs
+        BL      All_LEDs_Off
+        B       Loop_Done
+        
+Auto_On
+        ; Turn on auto LED
+        MOV     R0, #LED_AUTO
+        BL      Set_LED
+        B       Loop_Done
+
+Set_60
+        LDR     R0, =PWM_60
+        BL      Set_PWM
+        MOV     R0, #LED_60
+        BL      Set_LED
+        BL      Ensure_Direction        ; Make sure direction is set
+        B       Loop_Done
+
+Set_85
+        LDR     R0, =PWM_85
+        BL      Set_PWM
+        MOV     R0, #LED_85
+        BL      Set_LED
+        BL      Ensure_Direction
+        B       Loop_Done
+
+Set_100
+        LDR     R0, =PWM_100
+        BL      Set_PWM
+        MOV     R0, #LED_100
+        BL      Set_LED
+        BL      Ensure_Direction
+
+Loop_Done
+        POP     {R4-R6, PC}
+        ENDP
+
+;------------------------------------------------
+; Read button states with debouncing
+; Returns: 0=none, 1=60%, 2=85%, 3=100%
+;------------------------------------------------
+Read_Buttons PROC
+        PUSH    {R4-R5, LR}
+        
+        LDR     R4, =GPIOC_IDR
+        LDR     R1, [R4]
+        
+        ; Check each button (active LOW due to pull-up)
+        TST     R1, #(1<<BTN_60)
+        BEQ     Btn60_Pressed
+        TST     R1, #(1<<BTN_85)
+        BEQ     Btn85_Pressed
+        TST     R1, #(1<<BTN_100)
+        BEQ     Btn100_Pressed
+        TST     R1, #(1<<BTN_AUTO)
+        BEQ     BtnAuto_Pressed
+        
+        ; No button pressed - clear last button
+        LDR     R4, =last_button
+        MOV     R0, #0
+        STR     R0, [R4]
+        B       Read_Done
+
+Btn60_Pressed
+        MOV     R5, #1
+        B       Check_Debounce
+        
+Btn85_Pressed
+        MOV     R5, #2
+        B       Check_Debounce
+        
+Btn100_Pressed
+        MOV     R5, #3
+        B       Check_Debounce
+
+BtnAuto_Pressed
+        MOV     R5, #4
+        B       Check_Debounce
+
+Check_Debounce
+        ; Check if this is a new button press
+        LDR     R4, =last_button
+        LDR     R0, [R4]
+        CMP     R0, R5
+        BEQ     Already_Pressed
+        
+        ; New button press - save it and return
+        STR     R5, [R4]
+        MOV     R0, R5
+        B       Read_Done
+
+Already_Pressed
+        ; Same button still pressed - return 0
+        MOV     R0, #0
+
+Read_Done
+        POP     {R4-R5, PC}
+        ENDP
+
+;------------------------------------------------
+; Set PWM duty cycle
+; R0 = duty cycle value (0-8399)
+;------------------------------------------------
+Set_PWM PROC
+        PUSH    {R4, LR}
+        LDR     R4, =TIM2_CCR2
+        STR     R0, [R4]
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Ensure motor direction is set correctly
+;------------------------------------------------
+Ensure_Direction PROC
+        PUSH    {R4, LR}
+        
+        ; Set IN1=HIGH, IN2=LOW for forward
+        LDR     R4, =GPIOA_ODR
+        LDR     R0, [R4]
+        ORR     R0, R0, #(1<<MOTOR_IN1)     ; Set PA0
+        BIC     R0, R0, #(1<<MOTOR_IN2)     ; Clear PA1
+        STR     R0, [R4]
+        
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Set single LED on, others off
+; R0 = LED pin number
+;------------------------------------------------
+Set_LED PROC
+        PUSH    {R4-R5, LR}
+        MOV     R5, R0
+        
+        ; Turn all LEDs off first
+        BL      All_LEDs_Off
+        
+        ; Turn on the specified LED
+        LDR     R4, =GPIOA_BSRR
+        MOV     R0, #1
+        LSL     R0, R0, R5          ; Set bit position
+        STR     R0, [R4]            ; Write to BSRR
+        
+        POP     {R4-R5, PC}
+        ENDP
+
+;------------------------------------------------
+; Turn all LEDs off
+;------------------------------------------------
+All_LEDs_Off PROC
+        PUSH    {R4-R5, LR}
+        
+        ; Reset PA4, PA5, PA6, PA7 (upper 16 bits of BSRR)
+        LDR     R4, =GPIOA_BSRR
+        MOV     R0, #(1<<LED_AUTO)
+        ORR     R0, R0, #(1<<LED_60)
+        ORR     R0, R0, #(1<<LED_85)
+        ORR     R0, R0, #(1<<LED_100)
+        LSL     R0, R0, #16         ; Shift to upper 16 bits (reset)
+        STR     R0, [R4]
+        
+        POP     {R4-R5, PC}
+        ENDP
+
+;------------------------------------------------
+; Test LEDs - Cycle through each LED
+;------------------------------------------------
+Motor_ASM_Test_LEDs PROC
+        PUSH    {R4, LR}
+        
+        ; Test LED 60%
+        MOV     R0, #LED_60
+        BL      Set_LED
+        LDR     R0, =8000000
+        BL      Delay
+        
+        ; Test LED 85%
+        MOV     R0, #LED_85
+        BL      Set_LED
+        LDR     R0, =8000000
+        BL      Delay
+        
+        ; Test LED 100%
+        MOV     R0, #LED_100
+        BL      Set_LED
+        LDR     R0, =8000000
+        BL      Delay
+        
+        ; All LEDs off
+        BL      All_LEDs_Off
+        
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Simple delay loop
+;------------------------------------------------
+Delay PROC
+        PUSH    {R4, LR}
+        MOV     R4, R0
+Delay_Loop
+        SUBS    R4, R4, #1
+        BNE     Delay_Loop
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Set PWM from C code (for auto mode)
+; R0 = PWM value
+;------------------------------------------------
+Motor_ASM_Set_PWM_C PROC
+        PUSH    {R4, LR}
+        BL      Set_PWM
+        POP     {R4, PC}
+        ENDP
+
+;------------------------------------------------
+; Get auto mode status for C code
+; Returns: R0 = 0 (manual) or 1 (auto)
+;------------------------------------------------
+Motor_ASM_Get_Auto_Mode PROC
+        PUSH    {R4, LR}
+        LDR     R4, =auto_mode
+        LDR     R0, [R4]
+        POP     {R4, PC}
+        ENDP
+
+        ALIGN
+        END
