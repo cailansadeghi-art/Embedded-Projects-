@@ -1,41 +1,18 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body - Motor Controller with Auto Mode
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx.h"
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-// Timer handle typedef
 typedef struct {
     TIM_TypeDef *Instance;
 } TIM_HandleTypeDef;
-/* USER CODE END PTD */
 
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-#define DS18B20_CMD_CONVERTTEMP     0x44
 #define DS18B20_CMD_RSCRATCHPAD     0xBE
 #define DS18B20_CMD_SKIPROM         0xCC
-/* USER CODE END PD */
 
-/* Private variables ---------------------------------------------------------*/
-/* USER CODE BEGIN PV */
 TIM_HandleTypeDef htim3;
-/* USER CODE END PV */
 
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_TIM3_Init(void);
-/* USER CODE BEGIN PFP */
-// DS18B20 Functions
+
 extern void DS18B20_Init(TIM_HandleTypeDef *timer);
 extern float DS18B20_ReadTemp(void);
 extern void DS18B20_Write(uint8_t data);
@@ -48,10 +25,7 @@ extern void Motor_ASM_Loop(void);
 extern void Motor_ASM_Test_LEDs(void);
 extern void Motor_ASM_Set_PWM_C(uint32_t pwm);
 extern uint32_t Motor_ASM_Get_Auto_Mode(void);
-/* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
 
 void delay(volatile uint32_t count)
 {
@@ -61,12 +35,6 @@ void delay(volatile uint32_t count)
 /* Temperature-based PWM calculation with LED feedback */
 uint32_t Calculate_PWM_From_Temp(float temperature)
 {
-    // LOWERED Temperature thresholds for easier testing
-    // Below 15°C: 60% speed (5040) - 1 blink
-    // 15-22°C: 85% speed (7140) - 2 blinks
-    // Above 22°C: 100% speed (8399) - 3 blinks
-    
-    // Visual feedback on LEDs based on temperature
     
     if(temperature < 15.0f)
     {
@@ -102,12 +70,7 @@ uint32_t Calculate_PWM_From_Temp(float temperature)
     }
 }
 
-/* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
     float temperature = 0.0f;
@@ -150,12 +113,6 @@ int main(void)
                 /* Read temperature from DS18B20 */
                 temperature = DS18B20_ReadTemp();
                 
-                /* DIAGNOSTIC: Show actual temperature reading using LEDs */
-                /* This will help us see what the sensor is actually reading */
-                /* Turn on LEDs based on temperature value: */
-                /* LED1 (PA5) = temp > 10°C */
-                /* LED2 (PA6) = temp > 20°C */
-                /* LED3 (PA7) = temp > 30°C */
                 
                 GPIOA->BSRR = (1<<21) | (1<<22) | (1<<23); // Turn all LEDs off first
                 
@@ -169,7 +126,6 @@ int main(void)
                 /* Wait a moment to see the LEDs */
                 for(volatile int i=0; i<2000000; i++);
                 
-                /* Check if sensor is working (returns -999.0 on error) */
                 if(temperature < -500.0f)
                 {
                     // Sensor error - blink ALL LEDs rapidly
@@ -197,10 +153,6 @@ int main(void)
     }
 }
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -240,10 +192,7 @@ void SystemClock_Config(void)
     }
 }
 
-/**
-  * @brief TIM3 Initialization Function (for DS18B20 microsecond delays)
-  * @retval None
-  */
+
 static void MX_TIM3_Init(void)
 {
     // Enable TIM3 clock
@@ -262,14 +211,7 @@ static void MX_TIM3_Init(void)
     TIM3->CR1 |= TIM_CR1_CEN;
 }
 
-/* USER CODE BEGIN 4 */
 
-/* USER CODE END 4 */
-
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
     __disable_irq();
